@@ -4,8 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Server } from "socket.io";
 import { generateRoomCode } from "./components/RoomCodeGenerator.js";
-import { checkValidMove, createPuzzle } from "./components/PuzzleManager.js";
-import { generateBoard } from "./components/BoardManager.js";
+import { generateGame } from "./components/GameManager.js";
 
 const app = express();
 const server = createServer(app);
@@ -75,7 +74,7 @@ io.on("connection", (socket) => {
       `${socket.id} connected to room ${room}`
     );
 
-    socket.emit("game joined", rooms[room].board);
+    socket.emit("game joined", rooms[room].game);
   });
 
   socket.on("room create", () => {
@@ -95,55 +94,62 @@ io.on("connection", (socket) => {
 
     socket.emit("room joined", room);
 
-    let puzzle = createPuzzle();
-    let board = generateBoard(puzzle);
-    rooms[room].puzzle = puzzle;
-    rooms[room].board = board;
+    let game = generateGame();
+    rooms[room].game = game;
 
-    socket.emit("game joined", board);
+    socket.emit("game joined", game);
   });
 
+  // value 0: normal click, 1: left click/flag
   socket.on("game move selected", (move) => {
     console.log("Game moved", move);
     const { x, y, value } = move;
     const room = users[socket.id];
-    if (rooms[room].board[y][x].prefilled) {
+    const board = rooms[room].game.board;
+    const cell = board[y][x];
+    if (rooms[room].game.gamestate === "gameover") return;
+    if (board[y][x].visible) {
       socket.emit("chat message", "Not a valid move");
       return;
     }
-    if (rooms[room].board[y][x].value === value) {
+    if (board[y][x].flagged) {
+      if (value === 0) return;
+      board[y][x].flagged = false;
+      rooms[room].game.bombCount += 1;
+      io.to(room).emit("game move updated", {
+        cells: [cell],
+        gamestate: "playing",
+        bombCount: rooms[room].game.bombCount,
+      });
       return;
     }
-    let puzzle = rooms[room].puzzle;
-    const valid = checkValidMove(puzzle, move);
-    rooms[room].board[y][x].value = value;
-    rooms[room].board[y][x].valid = valid;
-    io.to(room).emit("game move updated", { ...move, valid: valid });
-  });
-
-  socket.on("game move erased", (move) => {
-    console.log("Game moved", move);
-    const { x, y, value } = move;
-    const room = users[socket.id];
-    if (rooms[room].board[y][x].prefilled) {
-      socket.emit("chat message", "Not a valid move");
+    if (value === 1) {
+      cell.flagged = true;
+      rooms[room].game.bombCount -= 1;
+      io.to(room).emit("game move updated", {
+        cells: [cell],
+        gamestate: "playing",
+        bombCount: rooms[room].game.bombCount,
+      });
       return;
     }
+    let updatedCells = rooms[room].game.revealCell(cell);
 
-    rooms[room].board[y][x].value = "";
-    io.to(room).emit("game move erased", move);
+    io.to(room).emit("game move updated", {
+      cells: updatedCells,
+      gamestate: rooms[room].game.gamestate,
+      bombCount: rooms[room].game.bombCount,
+    });
   });
 
   socket.on("game new", () => {
     console.log("creating new game");
     const room = users[socket.id];
 
-    let puzzle = createPuzzle();
-    let board = generateBoard(puzzle);
-    rooms[room].puzzle = puzzle;
-    rooms[room].board = board;
+    let game = generateGame();
+    rooms[room].game = game;
 
-    io.to(room).emit("game new", board);
+    io.to(room).emit("game new", game);
   });
 });
 
